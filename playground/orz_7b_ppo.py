@@ -23,7 +23,9 @@ from dataclasses import dataclass
 from functools import cached_property
 from itertools import islice, zip_longest
 from typing import Any, Awaitable, Callable, List, Optional, Tuple
+import wandb
 
+import pandas as pd
 import numpy as np
 import ray
 import torch
@@ -92,7 +94,7 @@ class PPOExpConfig(BasePPOExpConfig):
     use_orm_score: bool = False
 
     # Conditional settings with production values first
-    total_num_nodes: int = 32 if not DEBUG_MODE else 8
+    total_num_nodes: int = 24 if not DEBUG_MODE else 8
 
     # resource related settings
     ref_num_nodes: int = total_num_nodes
@@ -110,12 +112,13 @@ class PPOExpConfig(BasePPOExpConfig):
     zero_stage: int = 3
 
     # path related settings
-    pretrain: Optional[str] = "Qwen/Qwen2.5-7B" # TODO: or put your downloaded model path here!
+    pretrain: Optional[str] = "Qwen/Qwen2.5-7B-Instruct" # TODO: or put your downloaded model path here!
     reward_pretrain: Optional[str] = None
     save_interval: int = 50
     ckpt_path: str = f"orz_ckpt/{file_name}"
     save_path: str = f"orz_ckpt/{file_name}"
     tensorboard_log_dir: str = f"orz_logs/{file_name}"
+    wandb_name: str = 'Qwen2.5-7B_Orz_PPO-lr3e-6_bs1x128_ng64_len2048+16384'
 
     # MathTrain dataset and Math500 eval dataset
     # data related settings
@@ -134,7 +137,7 @@ class PPOExpConfig(BasePPOExpConfig):
     prompt_data_probs: ListConfig = ListConfig([1.0])
 
     # ppo related settings
-    actor_learning_rate: float = 1e-6
+    actor_learning_rate: float = 3e-6
     critic_learning_rate: float = 5e-6
     num_warmup_steps: int = 50
     prompt_max_len: int = 2048
@@ -143,6 +146,7 @@ class PPOExpConfig(BasePPOExpConfig):
     advantage_normalize: bool = True
 
     num_episodes: int = 20
+    max_steps: int = 2000
     rollout_batch_size: int = 128 if not DEBUG_MODE else 16
     n_samples_per_prompt: int = 64 if not DEBUG_MODE else 2
     micro_rollout_batch_size: int = 128 if not DEBUG_MODE else 128
@@ -162,18 +166,18 @@ class PPOExpConfig(BasePPOExpConfig):
     eval_interval: int = 10
 
     # generate related settings
-    packing_max_len: int = 16384
-    generate_max_len: int = 8000  # TODO: change to larger later
-    max_len: int = 8192  # TODO: change to larger later
+    packing_max_len: int = 32768
+    generate_max_len: int = 16384  # TODO: change to larger later
+    max_len: int = 18432  # TODO: change to larger later
     temperature: float = 1.0
-    top_p: float = 1.0
-    top_k: int = -1
+    top_p: float = 0.8
+    top_k: int = 50
     stop: ListConfig = ListConfig(["User:", "Human:", "Assistant:", "</answer>"])
 
     # grpo related settings
     use_grpo: bool = False
 
-    gpu_memory_utilization: float = 0.75 if use_grpo else 0.7 if not DEBUG_MODE else 0.5
+    gpu_memory_utilization: float = 0.5 if use_grpo else 0.7 if not DEBUG_MODE else 0.5
     critic_pretrain: Optional[str] = "" if use_grpo else pretrain
 
     gamma: float = 1.0
@@ -223,11 +227,28 @@ class CustomRewardTrainer(RayPPOTrainer):
             responses.append(output["response"])
         output_tokens = self._tokenize(responses, self.cfg.generate_max_len, padding=False)["input_ids"]
 
-        self.writer.add_text(
-            "generated_raws",
-            f"prompts: {prompts[0]}\n\noutputs: {outputs[0]['response']}\n\nfinal_answer: {outputs[0]['final_answer']}\n\nis_correct: {outputs[0]['iscorrect']}\n\nstop_reason: {outputs[0]['stop_reason']}\n\nresponse_token: {len(output_tokens[0])}",
-            self.global_step,
-        )
+        if os.environ.get('IS_HEADER', None) is not None:
+            table = {
+                'prompts': prompts,
+                'outputs': [o['response'] for o in outputs],
+                'final_answer': [o['final_answer'] for o in outputs],
+                'is_correct': [o['iscorrect'] for o in outputs],
+                'stop_reason': [o['stop_reason'] for o in outputs],
+                'response_token': [len(o) for o in output_tokens]
+            }
+            df = pd.DataFrame(table)
+            self.wandb_writer.log({'generated_raws': wandb.Table(dataframe=df)}, step=self.global_step)
+            pass
+        # self.writer.add_text(
+        #     "generated_raws",
+        #     f"prompts: {prompts[0]}\n\n"
+        #     f"outputs: {outputs[0]['response']}\n\n"
+        #     f"final_answer: {outputs[0]['final_answer']}\n\n"
+        #     f"is_correct: {outputs[0]['iscorrect']}\n\n"
+        #     f"stop_reason: {outputs[0]['stop_reason']}\n\n"
+        #     f"response_token: {len(output_tokens[0])}",
+        #     self.global_step,
+        # )
         for idx in range(len(outputs)):
             prompt, output, out_token = prompts[idx], outputs[idx], output_tokens[idx]
             rep_score, reflection_pattern_score = repeat_scores[idx], reflection_pattern_scores[idx]
@@ -257,7 +278,9 @@ class CustomRewardTrainer(RayPPOTrainer):
 
         # GRPO
         if self.cfg.use_grpo:
-            self.writer.add_scalar("grpo_raw_reward", np.mean(scores), self.global_step)
+            if os.environ.get('IS_HEADER', None) is not None:
+                self.wandb_writer.log({'grpo_raw_reward': np.mean(scores)}, step=self.global_step)
+            # self.writer.add_scalar("grpo_raw_reward", np.mean(scores), self.global_step)
             # grpo reward normalization
             for i, prompt in enumerate(prompts):
                 scores[i] -= np.mean(pass_at_n_dict[prompt])
@@ -293,15 +316,24 @@ class CustomRewardTrainer(RayPPOTrainer):
             "std_incorrect_num_tokens": 0 if len(incorrect_tokens_arr) == 0 else np.std(incorrect_tokens_arr).item(),
         }
         for k, v in log_dict.items():
-            self.writer.add_scalar(k, v, self.global_step)
+            # self.writer.add_scalar(k, v, self.global_step)
+            if os.environ.get('IS_HEADER', None) is not None:
+                self.wandb_writer.log({k: v}, step=self.global_step)
         logging_str = ",".join([f"{k}: {v:.4f}" for k, v in log_dict.items()])
         logger.info(logging_str)
 
         # make histogram for correct and incorrect response length
-        if len(correct_tokens_arr) > 0:
-            self.writer.add_histogram("correct_response_length", correct_tokens_arr, self.global_step)
-        if len(incorrect_tokens_arr) > 0:
-            self.writer.add_histogram("incorrect_response_length", incorrect_tokens_arr, self.global_step)
+        # if len(correct_tokens_arr) > 0:
+        #     self.writer.add_histogram("correct_response_length", correct_tokens_arr, self.global_step)
+        # if len(incorrect_tokens_arr) > 0:
+        #     self.writer.add_histogram("incorrect_response_length", incorrect_tokens_arr, self.global_step)
+        if os.environ.get('IS_HEADER', None) is not None:
+            if len(correct_tokens_arr) > 0:
+                self.wandb_writer.log({'correct_response_length': wandb.Histogram(correct_tokens_arr)}, 
+                                      step=self.global_step)
+            if len(incorrect_tokens_arr) > 0:
+                self.wandb_writer.log({'incorrect_response_length': wandb.Histogram(incorrect_tokens_arr)}, 
+                                      step=self.global_step)
 
         # make a pre-token score tensor for each output, for example: [0, 0, 0, 0, r]
         score_tensors = []
@@ -496,7 +528,9 @@ class CustomRewardTrainer(RayPPOTrainer):
         logging_str = ",".join([f"{k}: {v:.4f}" for k, v in log_dict.items()])
         logger.info(logging_str)
         for k, v in log_dict.items():
-            self.writer.add_scalar(f"evals/{k}", v, self.global_step)
+            # self.writer.add_scalar(f"evals/{k}", v, self.global_step)
+            if os.environ.get('IS_HEADER', None) is not None:
+                self.wandb_writer.log({f'evals/{k}': v}, step=self.global_step)
 
 
 class PPOExp(BasePPOExp):

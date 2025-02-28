@@ -15,6 +15,7 @@ from ray.util.placement_group import PlacementGroup, placement_group
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+import wandb
 
 from orz.ppo.actors import PPORayActorGroup
 from orz.ppo.replay_buffer import Experience, NaiveReplayBuffer
@@ -49,7 +50,15 @@ class RayPPOTrainer:
         self.prompts_dataloader = self.build_dataloader(train_dataset)
         self.colocate_pg = colocate_pg
 
-        self.writer = SummaryWriter(log_dir=self.cfg.tensorboard_log_dir)
+        # self.writer = SummaryWriter(log_dir=self.cfg.tensorboard_log_dir)
+        if os.environ.get('IS_HEADER', None) is not None:
+            wandb.login(key=os.environ['WANDB_KEY'])
+            self.wandb_writer = wandb.init(
+                name=self.cfg.wandb_name, 
+                project=self.cfg.wandb_project,
+                dir=self.cfg.tensorboard_log_dir,
+                config=self.cfg
+            )
         self.replay_buffer = NaiveReplayBuffer(
             sample_batch_size=self.cfg.micro_train_batch_size,
             limit=0,
@@ -58,7 +67,9 @@ class RayPPOTrainer:
         )
 
     def __del__(self):
-        self.writer.close()
+        # self.writer.close()
+        if os.environ.get('IS_HEADER', None) is not None:
+            self.wandb_writer.finish()
 
     async def eval(self):
         raise NotImplementedError("Eval function should be implemented in user's exp")
@@ -173,13 +184,21 @@ class RayPPOTrainer:
                 logger.info(status)
                 pbar.update()
                 # log epoch info
-                self.writer.add_scalar("episode_idx", episode, self.global_step)
+                # self.writer.add_scalar("episode_idx", episode, self.global_step)
+                if os.environ.get('IS_HEADER', None) is not None:
+                    self.wandb_writer.log({'episode_idx': episode}, step=self.global_step)
                 self.global_step += 1
                 if self.global_step % self.cfg.save_interval == 0:
                     await self.policy_model.async_save_model(self.tokenizer, self.global_step)
                     if self.critic_model is not None:
                         await self.critic_model.async_save_model(self.tokenizer, self.global_step)
                     logger.info("Successfully save model weights, training continue.")
+
+                if self.global_step + 1 > self.cfg.max_steps:
+                    break
+            
+            if self.global_step + 1 > self.cfg.max_steps:
+                    break
 
             if self.cfg.update_ref_every_epoch:
                 await self.policy_model.backload_to_gpu()
@@ -283,8 +302,10 @@ class RayPPOTrainer:
 
         # 2. visualization generated results example
         vis = self._detokenize(experiences[0].sequences[0][: int(experiences[0].info["total_length"].flatten()[0])])
-        self.writer.add_text("generated_sequences", vis, self.global_step)
-        self.writer.flush()
+        # self.writer.add_text("generated_sequences", vis, self.global_step)
+        # self.writer.flush()
+        if os.environ.get('IS_HEADER', None) is not None:
+            self.wandb_writer.log({'generated_sequences': vis}, step=self.global_step)
 
         # 3. calculate advantages and returns / along with tensorboard logging
         avg_rewards = 0
@@ -315,17 +336,30 @@ class RayPPOTrainer:
 
         # 4. tensorboard logging
         logger.info(
-            f"avg_raw_rewards: {avg_rewards / len(experiences)}, avg_kl: {avg_kl / len(experiences)}, avg_response_length: {avg_response_length / len(experiences)}, avg_orm_score: {avg_orm_score / len(experiences)}, avg_custom_rewards: {avg_custom_rewards / len(experiences)}"
+            f"avg_raw_rewards: {avg_rewards / len(experiences)}, "
+            f"avg_kl: {avg_kl / len(experiences)}, "
+            f"avg_response_length: {avg_response_length / len(experiences)}, "
+            f"avg_orm_score: {avg_orm_score / len(experiences)}, "
+            f"avg_custom_rewards: {avg_custom_rewards / len(experiences)}"
         )
-        self.writer.add_scalar("avg_raw_rewards", avg_rewards / len(experiences), self.global_step)
-        self.writer.add_scalar("avg_kl", avg_kl / len(experiences), self.global_step)
-        self.writer.add_scalar("avg_kl_max", avg_kl_max / len(experiences), self.global_step)
-        self.writer.add_scalar("avg_response_length", avg_response_length / len(experiences), self.global_step)
-        self.writer.add_scalar("avg_orm_score", avg_orm_score / len(experiences), self.global_step)
-        self.writer.add_scalar("avg_custom_rewards", avg_custom_rewards / len(experiences), self.global_step)
-        self.writer.add_scalar("avg_raw_advantages", avg_advantages / len(experiences), self.global_step)
-        self.writer.add_scalar("avg_raw_advantages_abs", avg_advantages_abs / len(experiences), self.global_step)
-        self.writer.flush()
+        # self.writer.add_scalar("avg_raw_rewards", avg_rewards / len(experiences), self.global_step)
+        # self.writer.add_scalar("avg_kl", avg_kl / len(experiences), self.global_step)
+        # self.writer.add_scalar("avg_kl_max", avg_kl_max / len(experiences), self.global_step)
+        # self.writer.add_scalar("avg_response_length", avg_response_length / len(experiences), self.global_step)
+        # self.writer.add_scalar("avg_orm_score", avg_orm_score / len(experiences), self.global_step)
+        # self.writer.add_scalar("avg_custom_rewards", avg_custom_rewards / len(experiences), self.global_step)
+        # self.writer.add_scalar("avg_raw_advantages", avg_advantages / len(experiences), self.global_step)
+        # self.writer.add_scalar("avg_raw_advantages_abs", avg_advantages_abs / len(experiences), self.global_step)
+        # self.writer.flush()
+        if os.environ.get('IS_HEADER', None) is not None:
+            self.wandb_writer.log({'avg_raw_rewards': avg_rewards / len(experiences)}, step=self.global_step)
+            self.wandb_writer.log({'avg_kl': avg_kl / len(experiences)}, step=self.global_step)
+            self.wandb_writer.log({'avg_kl_max': avg_kl_max / len(experiences)}, step=self.global_step)
+            self.wandb_writer.log({'avg_response_length': avg_response_length / len(experiences)}, step=self.global_step)
+            self.wandb_writer.log({'avg_orm_score': avg_orm_score / len(experiences)}, step=self.global_step)
+            self.wandb_writer.log({'avg_custom_rewards': avg_custom_rewards / len(experiences)}, step=self.global_step)
+            self.wandb_writer.log({'avg_raw_advantages': avg_advantages / len(experiences)}, step=self.global_step)
+            self.wandb_writer.log({'avg_raw_advantages_abs': avg_advantages_abs / len(experiences)}, step=self.global_step)
 
     @torch.no_grad()
     async def inference_and_calculates(
@@ -731,9 +765,13 @@ class RayPPOTrainer:
         if global_steps > self.cfg.freezing_actor_steps:
             async with Timer("Policy model training"):
                 status = await self.policy_model.async_ppo_train(global_steps, replay_buffers)
-            self.writer.add_scalar("ppo_clip_count", status[0]["clip_ratio"], global_steps)
-            self.writer.add_scalar("policy_update_steps", status[0]["policy_update_steps"], global_steps)
-            self.writer.add_scalar("policy_entropy", status[0]["entropy"], global_steps)
+            # self.writer.add_scalar("ppo_clip_count", status[0]["clip_ratio"], global_steps)
+            # self.writer.add_scalar("policy_update_steps", status[0]["policy_update_steps"], global_steps)
+            # self.writer.add_scalar("policy_entropy", status[0]["entropy"], global_steps)
+            if os.environ.get('IS_HEADER', None) is not None:
+                self.wandb_writer.log({'ppo_clip_count': status[0]['clip_ratio']}, step=global_steps)
+                self.wandb_writer.log({'policy_update_steps': status[0]['policy_update_steps']}, step=global_steps)
+                self.wandb_writer.log({'policy_entropy': status[0]['entropy']}, step=global_steps)
             await self.policy_model.async_run_method("empty_cache")
         if self.cfg.colocate_all:
             async with Timer("Backload vllm engines to gpu"):
@@ -748,8 +786,11 @@ class RayPPOTrainer:
         async with Timer("Critic model training"):
             status = await self.critic_model.async_ppo_train(global_steps, replay_buffers)
         if critic_loss := status[0].get("critic_loss", None):
-            self.writer.add_scalar("critic_loss", critic_loss, global_steps)
-            self.writer.add_scalar("critic_update_steps", status[0]["critic_update_steps"], global_steps)
+            # self.writer.add_scalar("critic_loss", critic_loss, global_steps)
+            # self.writer.add_scalar("critic_update_steps", status[0]["critic_update_steps"], global_steps)
+            if os.environ.get('IS_HEADER', None) is not None:
+                self.wandb_writer.log({'critic_loss': critic_loss}, step=global_steps)
+                self.wandb_writer.log({'critic_update_steps': status[0]['critic_update_steps']}, step=global_steps)
         return status[0]
 
     async def custom_reward_fn(

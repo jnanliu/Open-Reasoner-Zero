@@ -41,6 +41,7 @@ class BasePPOExpConfig(BaseConfig):
     ckpt_path: str = "example_path"
     save_path: str = "example_path"
     tensorboard_log_dir: str = "example_path"
+    wandb_project: str = 'R1-Reproduction-Orz'
     prompt_data: ListConfig = ListConfig([])
 
     # training related settings
@@ -76,6 +77,7 @@ class BasePPOExpConfig(BaseConfig):
     critic_learning_rate: float = 9e-6
     num_episodes: int = 1
     max_epochs: int = 1
+    max_steps: int = 1
     prompt_max_len: int = 1024
     generate_max_len: int = 1024
 

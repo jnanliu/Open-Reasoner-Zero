@@ -33,7 +33,7 @@ class PPOExpConfig(BasePPOExpConfig):
     use_orm_score: bool = False
 
     # Conditional settings with production values first
-    total_num_nodes: int = 32 if not DEBUG_MODE else 8
+    total_num_nodes: int = 8 if not DEBUG_MODE else 8
 
     # resource related settings
     ref_num_nodes: int = total_num_nodes
@@ -51,12 +51,13 @@ class PPOExpConfig(BasePPOExpConfig):
     zero_stage: int = 3
 
     # path related settings
-    pretrain: Optional[str] = "Qwen/Qwen2.5-7B" # TODO: or put your downloaded model path here!
+    pretrain: Optional[str] = "Qwen/Qwen2.5-7B-Instruct" # TODO: or put your downloaded model path here!
     reward_pretrain: Optional[str] = None
     save_interval: int = 50
     ckpt_path: str = f"orz_ckpt/{file_name}"
     save_path: str = f"orz_ckpt/{file_name}"
     tensorboard_log_dir: str = f"orz_logs/{file_name}"
+    wandb_name: str = 'Qwen2.5-7B_orz-grpo_lr3e-6_rbs32_ng64_len2048+16384'
 
     # MathTrain dataset and Math500 eval dataset
     # data related settings
@@ -83,10 +84,11 @@ class PPOExpConfig(BasePPOExpConfig):
     update_ref_every_epoch: bool = True
     advantage_normalize: bool = True
 
-    num_episodes: int = 20
-    rollout_batch_size: int = 128 if not DEBUG_MODE else 16
+    num_episodes: int = 1
+    max_steps: int = 2000
+    rollout_batch_size: int = 32 if not DEBUG_MODE else 16
     n_samples_per_prompt: int = 64 if not DEBUG_MODE else 2
-    micro_rollout_batch_size: int = 128
+    micro_rollout_batch_size: int = 32
 
     policy_update_steps: int = 1
     critic_update_steps: int = 12 if not DEBUG_MODE else 1
@@ -104,17 +106,17 @@ class PPOExpConfig(BasePPOExpConfig):
 
     # generate related settings
     packing_max_len: int = 16384
-    generate_max_len: int = 8000  # TODO: change to larger later
-    max_len: int = 8192  # TODO: change to larger later
-    temperature: float = 1.0
-    top_p: float = 1.0
+    generate_max_len: int = 12000  # TODO: change to larger later
+    max_len: int = 16384  # TODO: change to larger later
+    temperature: float = 0.7
+    top_p: float = 0.8
     top_k: int = -1
     stop: ListConfig = ListConfig(["User:", "Human:", "Assistant:", "</answer>"])
 
     # grpo related settings
     use_grpo: bool = True
 
-    gpu_memory_utilization: float = 0.75 if not DEBUG_MODE else 0.5
+    gpu_memory_utilization: float = 0.4 if not DEBUG_MODE else 0.5
     critic_pretrain: Optional[str] = "" if use_grpo else pretrain
 
     gamma: float = 1.0
